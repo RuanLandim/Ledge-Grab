@@ -4,6 +4,10 @@
 
 ConfigLedgeGrab = {}
 
+-- EN: Use KeyMapping instead of while loop (Highly Recommended for optimization)
+-- PT-BR: Usar KeyMapping ao invés do while loop (Altamente Recomendado para otimização)
+ConfigLedgeGrab.UseKeyMapping = true
+
 -- EN: Maximum distance the player needs to be from the edge to climb
 -- PT-BR: Distância máxima que o jogador precisa estar da borda para escalar
 ConfigLedgeGrab.ReachDistance = 1.6          -- Good values / Bons valores: 1.2 ~ 2.0
@@ -20,9 +24,13 @@ ConfigLedgeGrab.MinClimbHeight = 0.6
 -- PT-BR: Tempo de recarga entre escaladas (em ms) - evita spam
 ConfigLedgeGrab.Cooldown = 900
 
--- EN: Climb key (22 = Space / X on controller)
--- PT-BR: Tecla para escalar (22 = Espaço / X no controle)
+-- EN: Climb key (Used if UseKeyMapping is false) (22 = Space / X on controller)
+-- PT-BR: Tecla para escalar (Usada se UseKeyMapping for false) (22 = Espaço / X no controle)
 ConfigLedgeGrab.ClimbKey = 22
+
+-- EN: Default KeyMapping key (Used if UseKeyMapping is true)
+-- PT-BR: Tecla padrão do KeyMapping (Usada se UseKeyMapping for true)
+ConfigLedgeGrab.DefaultKeyMapping = 'SPACE'
 
 -- EN: Only works if falling / jumping
 -- PT-BR: Só funciona se estiver caindo / pulando
@@ -34,13 +42,6 @@ ConfigLedgeGrab.Debug = false
 
 local LastClimb = 0
 
-function RotationToDirection(Rotation)
-    local Z = math.rad(Rotation.z)
-    local X = math.rad(Rotation.x)
-    local Num = math.abs(math.cos(X))
-    return vector3(-math.sin(Z) * Num, math.cos(Z) * Num, math.sin(X))
-end
-
 function HasClimbableLedge(Ped)
     local Coords = GetEntityCoords(Ped)
     local Forward = GetEntityForwardVector(Ped)
@@ -50,14 +51,14 @@ function HasClimbableLedge(Ped)
     local EndPos = StartPos + (Forward * ConfigLedgeGrab.ReachDistance)
 
     local Ray = StartShapeTestRay(StartPos.x, StartPos.y, StartPos.z, EndPos.x, EndPos.y, EndPos.z, 17, Ped, 0)
-    local _, Hit, HitCoords, SurfaceNormal, EntityHit = GetShapeTestResult(Ray)
+    local _, Hit, HitCoords, SurfaceNormal, _ = GetShapeTestResult(Ray)
 
     if not Hit then
         -- Second raycast slightly lower (helps on edges)
         StartPos = Coords + vector3(0.0, 0.0, 0.35)
         EndPos = StartPos + (Forward * ConfigLedgeGrab.ReachDistance)
         Ray = StartShapeTestRay(StartPos.x, StartPos.y, StartPos.z, EndPos.x, EndPos.y, EndPos.z, 17, Ped, 0)
-        _, Hit, HitCoords, SurfaceNormal, EntityHit = GetShapeTestResult(Ray)
+        _, Hit, HitCoords, SurfaceNormal, _ = GetShapeTestResult(Ray)
     end
 
     if Hit then
@@ -66,8 +67,7 @@ function HasClimbableLedge(Ped)
         -- Checks if the height is within the configured range
         if HeightDiff >= ConfigLedgeGrab.MinClimbHeight and HeightDiff <= ConfigLedgeGrab.MaxClimbHeight then
             -- Checks if the surface is more or less vertical (edge)
-            local NormalDot = SurfaceNormal.z
-            if NormalDot < 0.65 then  -- the smaller, the more vertical the wall is
+            if SurfaceNormal.z < 0.65 then  -- the smaller, the more vertical the wall is
                 if ConfigLedgeGrab.Debug then
                     print(("[Parkour] Ledge detected | Height: %.2f | Distance: %.2f"):format(HeightDiff, #(HitCoords - Coords)))
                 end
@@ -79,30 +79,50 @@ function HasClimbableLedge(Ped)
     return false
 end
 
-Citizen.CreateThread(function()
-    while true do
-        local Sleep = 250
-        local Ped = PlayerPedId()
+function TryLedgeGrab()
+    local Now = GetGameTimer()
+    if Now - LastClimb < ConfigLedgeGrab.Cooldown then return end
 
-        if not IsPedInAnyVehicle(Ped, false) and not IsEntityDead(Ped) and not IsPedRagdoll(Ped) then
-            local IsInAir = IsPedJumping(Ped) or IsPedFalling(Ped) or (GetEntityHeightAboveGround(Ped) > 1.2)
+    local Ped = PlayerPedId()
 
-            if not ConfigLedgeGrab.OnlyInAir or IsInAir then
-                Sleep = 0
+    if IsPedInAnyVehicle(Ped, false) or IsEntityDead(Ped) or IsPedRagdoll(Ped) then return end
 
-                if IsControlJustPressed(0, ConfigLedgeGrab.ClimbKey) then
-                    local Now = GetGameTimer()
+    if ConfigLedgeGrab.OnlyInAir then
+        local IsInAir = IsPedJumping(Ped) or IsPedFalling(Ped) or (GetEntityHeightAboveGround(Ped) > 1.2)
+        if not IsInAir then return end
+    end
 
-                    if Now - LastClimb > ConfigLedgeGrab.Cooldown then
-                        if HasClimbableLedge(Ped) then
-                            TaskClimb(Ped, true)
-                            LastClimb = Now
-                        end
+    if HasClimbableLedge(Ped) then
+        TaskClimb(Ped, true)
+        LastClimb = Now
+    end
+end
+
+if ConfigLedgeGrab.UseKeyMapping then
+    RegisterCommand('+ledgegrab', function()
+        TryLedgeGrab()
+    end, false)
+    
+    RegisterKeyMapping('+ledgegrab', 'Parkour: Agarrar Borda / Ledge Grab', 'keyboard', ConfigLedgeGrab.DefaultKeyMapping)
+else
+    Citizen.CreateThread(function()
+        while true do
+            local Sleep = 250
+            local Ped = PlayerPedId()
+            
+            -- Basic checks before reducing sleep
+            if not IsPedInAnyVehicle(Ped, false) and not IsEntityDead(Ped) and not IsPedRagdoll(Ped) then
+                local IsInAir = IsPedJumping(Ped) or IsPedFalling(Ped) or (GetEntityHeightAboveGround(Ped) > 1.2)
+                
+                if not ConfigLedgeGrab.OnlyInAir or IsInAir then
+                    Sleep = 0
+                    if IsControlJustPressed(0, ConfigLedgeGrab.ClimbKey) then
+                        TryLedgeGrab()
                     end
                 end
             end
+            
+            Citizen.Wait(Sleep)
         end
-
-        Citizen.Wait(Sleep)
-    end
-end)
+    end)
+end
